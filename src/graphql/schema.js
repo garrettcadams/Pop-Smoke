@@ -4,11 +4,15 @@ const typeDefs = gql`
   type Query {
     health: String
     userProfile: User # Requires authentication
-    nearByRestaurants(latitude: Float!, longitude: Float!, radius: Float = 5.0): [Restaurant!]
-    restaurant(id: ID, slug: String): Restaurant
-    myOrders(offset: Int, limit: Int): [Order!] # For logged-in user
-    orderDetails(orderId: ID!): Order # For logged-in user or admin (by MongoDB _id or custom orderId string)
+    "Retrieves stores near a given location within a specified radius."
+    nearByStores(latitude: Float!, longitude: Float!, radius: Float = 5.0): [Store!] # Renamed
+    store(id: ID, slug: String): Store # Renamed
+    myOrders(offset: Int, limit: Int): [Order!]
+    orderDetails(orderId: ID!): Order
     getConfiguration: Configuration
+    # New Review Queries
+    reviewsForStore(storeId: ID!, offset: Int, limit: Int): [Review!]
+    reviewsForProduct(productId: ID!, offset: Int, limit: Int): [Review!]
   }
 
   type Configuration {
@@ -23,12 +27,62 @@ const typeDefs = gql`
     skipEmailVerification: Boolean
     skipMobileVerification: Boolean
     appMinimumVersion: String
+    # New configuration fields
+    defaultAgeLimit: Int 
+    idImageStorageBucket: String
   }
 
   type Subscription {
     orderStatusChanged(orderId: ID!): Order
   }
 
+  enum IdStatusEnum {
+    NOT_UPLOADED
+    PENDING_VERIFICATION
+    VERIFIED
+    REJECTED
+  }
+
+  enum StoreTypeEnum {
+    SMOKE_SHOP
+    LIQUOR_STORE
+    GENERAL_MERCHANDISE
+  }
+
+  enum ReviewTargetType {
+    STORE
+    PRODUCT
+  }
+
+  type Review {
+    _id: ID!
+    user: User! # User who wrote the review
+    targetType: ReviewTargetType! # STORE or PRODUCT
+    targetId: ID! # ID of the Store or Product being reviewed
+    rating: Int! # e.g., 1-5 stars
+    comment: String
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  input ReviewInput {
+    targetType: ReviewTargetType!
+    targetId: ID!
+    rating: Int! # Add validation (e.g., 1-5) in resolver
+    comment: String
+  }
+
+  type Attribute {
+    key: String!
+    value: String!
+  }
+
+  input AttributeInput {
+    key: String!
+    value: String!
+  }
+
+  "Represents a user in the system."
   type User {
     id: ID!
     name: String!
@@ -37,24 +91,40 @@ const typeDefs = gql`
     emailIsVerified: Boolean
     phoneIsVerified: Boolean
     addresses: [Address!]
+    # ID Verification fields
+    "URL of the uploaded ID image."
+    idImageUrl: String
+    "Current status of the user's ID verification."
+    idVerificationStatus: IdStatusEnum!
+    dateOfBirth: String # YYYY-MM-DD
+    idRejectionReason: String
   }
 
-  type Restaurant {
+  "Represents a store that offers products for sale."
+  type Store { # Renamed from Restaurant
     _id: ID!
+    "Display name of the store."
     name: String!
     image: String
     slug: String!
-    address: String! # Full address string
-    location: Location! # GeoJSON Point
-    deliveryTime: String # e.g., "30-45 mins"
-    minimumOrder: Float
-    tax: Float # Restaurant-specific tax, if any
-    reviewData: ReviewSummary # Aggregated review data
-    categories: [Category!] # Menu categories
-    rating: Float # Overall restaurant rating, could be same as reviewData.ratings
-    isAvailable: Boolean # Is the restaurant currently open/taking orders
+    address: String! # Full address string for the store
+    location: Location! # GeoJSON Point for store location
+    "Estimated time for order delivery or pickup, e.g., '1-2 hours', 'Next day'."
+    estimatedDeliveryTime: String # Renamed from deliveryTime
+    minimumOrder: Float # Minimum order value from this store
+    tax: Float # Store-specific tax percentage
+    reviewData: ReviewSummary # DEPRECATED by new fields
+    categories: [Category!] # Product categories available in this store
+    rating: Float # DEPRECATED by averageRating
+    isAvailable: Boolean # Is the store currently open/taking orders
     openingTimes: [OpeningTimeEntry!]
-    zone: Zone # Delivery zone information
+    zone: Zone # Delivery zone information for the store
+    licenseNumber: String # Optional license number
+    storeType: StoreTypeEnum # Type of store
+    # New Review-related fields
+    reviews(offset: Int, limit: Int): [Review!]
+    averageRating: Float
+    reviewCount: Int
   }
 
   type OpeningTimeEntry {
@@ -81,19 +151,31 @@ const typeDefs = gql`
   type Category {
     _id: ID!
     title: String!
-    foods: [FoodItem!]
-    restaurantId: ID # Reference to the restaurant this category belongs to
+    products: [Product!] # Renamed from foods
+    storeId: ID # Renamed from restaurantId, Reference to the store
   }
 
-  type FoodItem {
+  "Represents a product sold by a store."
+  type Product { # Renamed from FoodItem
     _id: ID!
+    "Display title of the product."
     title: String!
     image: String
     description: String
-    variations: [Variation!]
-    isAvailable: Boolean # Default true
-    categoryId: ID # Reference to the category this food item belongs to
-    restaurantId: ID # Reference to the restaurant this food item belongs to
+    variations: [Variation!] # Product variations (e.g., size, color)
+    isAvailable: Boolean # Default true, is the product available for sale
+    categoryId: ID # Reference to the category this product belongs to
+    storeId: ID # Renamed from restaurantId, Reference to the store this product belongs to
+    "Brand of the product, e.g., 'Juul', 'Marlboro'."
+    brand: String
+    sku: String # Stock Keeping Unit
+    volumeMl: Int # For liquids like e-juice
+    nicotineMg: Float # For vape products
+    attributes: [Attribute!] # Flexible key-value attributes
+    # New Review-related fields
+    reviews(offset: Int, limit: Int): [Review!]
+    averageRating: Float
+    reviewCount: Int
   }
 
   type Variation {
@@ -132,13 +214,13 @@ const typeDefs = gql`
 
   # --- Order Related Types ---
   input OrderItemAddonInput {
-    addonId: ID! # Refers to the _id of the Addon object within FoodItem.variations.addons
+    addonId: ID! # Refers to the _id of the Addon object within Product.variations.addons
     selectedOptionId: ID! # Refers to the _id of the AddonOption within that Addon
   }
 
   input OrderItemInput {
-    foodItemId: ID!
-    variationId: ID! # Refers to the _id of the Variation object within FoodItem.variations
+    productId: ID! # Renamed from foodItemId
+    variationId: ID! # Refers to the _id of the Variation object within Product.variations
     quantity: Int!
     addons: [OrderItemAddonInput!] # Optional
   }
@@ -157,9 +239,8 @@ const typeDefs = gql`
 
   type OrderItem {
     _id: ID! # Auto-generated ObjectId for this specific line item
-    foodItemSnapshot: FoodItem! # Denormalized snapshot of essential FoodItem fields (name, image etc.)
-                                 # Can be populated with current FoodItem data on query if needed.
-    foodItemId: ID! # Original FoodItem ID for reference
+    productSnapshot: Product! # Renamed from foodItemSnapshot
+    productId: ID! # Renamed from foodItemId
     variationSnapshot: Variation! # Denormalized snapshot of essential Variation fields (title, price etc.)
     variationId: ID! # Original Variation ID for reference
     quantity: Int!
@@ -179,13 +260,15 @@ const typeDefs = gql`
     REJECTED    # Order rejected by restaurant
   }
 
+  "Represents a customer's order."
   type Order {
     _id: ID!
-    orderId: String! # User-friendly unique order identifier
+    "User-friendly unique order identifier (e.g., ORD-timestamp-random)."
+    orderId: String!
     user: User!
     userId: ID!
-    restaurantSnapshot: Restaurant!
-    restaurantId: ID!
+    storeSnapshot: Store! # Renamed from restaurantSnapshot
+    storeId: ID! # Renamed from restaurantId
     items: [OrderItem!]!
     deliveryAddress: Address!
     paymentMethod: String!
@@ -212,6 +295,11 @@ const typeDefs = gql`
     # Payment related fields
     paymentStatus: String # e.g., PENDING, SUCCESSFUL, FAILED
     mockPaymentTransactionId: String
+    # Delivery Verification fields
+    deliveryIdImageUrl: String
+    deliveryVerificationTimestamp: String
+    deliveryRecipientNameMatchesId: Boolean
+    deliveryRecipientIsOfLegalAge: Boolean
   }
 
   type Location {
@@ -229,22 +317,24 @@ const typeDefs = gql`
     endTime: String!
   }
 
-  input RestaurantInput {
+  input StoreInput { # Renamed from RestaurantInput
     name: String!
     image: String
     slug: String # Optional, can be auto-generated
-    address: String!
-    location: LocationInput!
-    deliveryTime: String
+    address: String! # Full address string for the store
+    location: LocationInput! # GeoJSON Point for store location
+    estimatedDeliveryTime: String # Renamed from deliveryTime
     minimumOrder: Float
     tax: Float
     openingTimes: [OpeningTimeEntryInput!]
     isAvailable: Boolean
+    licenseNumber: String
+    storeType: StoreTypeEnum
   }
 
   input CategoryInput {
     title: String!
-    restaurantId: ID!
+    storeId: ID! # Renamed from restaurantId
   }
 
   input AddonOptionInput {
@@ -268,14 +358,19 @@ const typeDefs = gql`
     addons: [AddonInput!] # Embedded addons
   }
 
-  input FoodItemInput {
+  input ProductInput { # Renamed from FoodItemInput
     title: String!
     image: String
     description: String
-    variations: [VariationInput!]!
+    variations: [VariationInput!]! # Product variations
     categoryId: ID!
-    restaurantId: ID! # Should match category's restaurantId
+    storeId: ID! # Renamed from restaurantId, should match category's storeId
     isAvailable: Boolean
+    brand: String
+    sku: String
+    volumeMl: Int
+    nicotineMg: Float
+    attributes: [AttributeInput!]
   }
 
   # --- Existing Input Types ---
@@ -312,18 +407,30 @@ const typeDefs = gql`
     deleteAddress(addressId: ID!): User
     selectAddress(addressId: ID!): User
 
-    # Restaurant & Menu Write/Admin Mutations
-    createRestaurant(input: RestaurantInput!): Restaurant
-    updateRestaurant(id: ID!, input: RestaurantInput!): Restaurant
-    createCategory(input: CategoryInput!): Category
+    # Store & Product Write/Admin Mutations (formerly Restaurant & Menu)
+    createStore(input: StoreInput!): Store # Renamed
+    updateStore(id: ID!, input: StoreInput!): Store # Renamed
+    createCategory(input: CategoryInput!): Category # input now takes storeId
     updateCategory(id: ID!, input: CategoryInput!): Category
-    createFoodItem(input: FoodItemInput!): FoodItem
-    updateFoodItem(id: ID!, input: FoodItemInput!): FoodItem
-    _ensureRestaurantIndex: Boolean
+    createProduct(input: ProductInput!): Product # Renamed
+    updateProduct(id: ID!, input: ProductInput!): Product # Renamed
+    _ensureStoreIndex: Boolean # Renamed
 
     # Order Mutations
-    placeOrder(restaurantId: ID!, items: [OrderItemInput!]!, paymentMethod: String!, addressId: ID!, tipping: Float, notes: String, preparationTimeMinutes: Int): Order
+    "Places a new order. Requires user to have a VERIFIED ID status."
+    placeOrder(storeId: ID!, items: [OrderItemInput!]!, paymentMethod: String!, addressId: ID!, tipping: Float, notes: String, preparationTimeMinutes: Int): Order # Renamed restaurantId to storeId
     updateOrderStatus(orderId: ID!, status: OrderStatus!): Order
+
+    # ID Verification Mutations
+    uploadIdImage(imageUrl: String!): User
+    _admin_updateIdVerificationStatus(userId: ID!, status: IdStatusEnum!, dateOfBirth: String, rejectionReason: String): User
+
+    # Delivery Verification Mutation
+    confirmDeliveryWithId(orderId: ID!, deliveryIdImageUrl: String!, recipientNameMatchesId: Boolean!, recipientIsOfLegalAge: Boolean!): Order
+
+    # Review Mutation
+    "Submits a new review for a store or product, or updates an existing one."
+    submitReview(input: ReviewInput!): Review
   }
 `;
 

@@ -19,4 +19,8 @@ module.exports = {
   SKIP_EMAIL_VERIFICATION: (process.env.SKIP_EMAIL_VERIFICATION || 'false').toLowerCase() === 'true',
   SKIP_MOBILE_VERIFICATION: (process.env.SKIP_MOBILE_VERIFICATION || 'false').toLowerCase() === 'true',
   APP_MINIMUM_VERSION: process.env.APP_MINIMUM_VERSION || '1.0.0',
+
+  // New fields for ID verification and age limits
+  DEFAULT_AGE_LIMIT: parseInt(process.env.DEFAULT_AGE_LIMIT || '21', 10),
+  ID_IMAGE_STORAGE_BUCKET: process.env.ID_IMAGE_STORAGE_BUCKET || null,
 };

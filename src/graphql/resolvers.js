@@ -1,28 +1,33 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { AuthenticationError, UserInputError, ApolloError } = require('apollo-server-express');
-const { PubSub } = require('graphql-subscriptions'); // For Subscriptions
+const { PubSub } = require('graphql-subscriptions');
 const { getDB } = require('../db');
-const { JWT_SECRET, ...config } = require('../config'); // Import the centralized config, exclude JWT_SECRET if already destructured
+const { JWT_SECRET, ...config } = require('../config');
 const { ObjectId } = require('mongodb');
 const slugify = require('../utils/slugify');
 
-const pubsub = new PubSub(); // Instantiate PubSub
-const ORDER_STATUS_CHANGED_TOPIC = 'ORDER_STATUS_CHANGED'; // Topic for publishing
+const pubsub = new PubSub();
+const ORDER_STATUS_CHANGED_TOPIC = 'ORDER_STATUS_CHANGED';
 
 const USERS_COLLECTION = 'users';
-const RESTAURANTS_COLLECTION = 'restaurants';
+const STORES_COLLECTION = 'stores';
 const CATEGORIES_COLLECTION = 'categories';
-const FOODITEMS_COLLECTION = 'fooditems';
+const PRODUCTS_COLLECTION = 'products';
 const ORDERS_COLLECTION = 'orders';
+const REVIEWS_COLLECTION = 'reviews'; // New collection
 
 // --- Helper Functions for Output Transformation ---
-const transformAddonOption = (option) => {
+
+const transformAttribute = (attribute) => { /* ... existing ... */
+  if (!attribute) return null;
+  return { key: attribute.key, value: attribute.value };
+};
+const transformAddonOption = (option) => { /* ... existing ... */
   if (!option) return null;
   return { ...option, _id: (option._id || new ObjectId()).toHexString() };
 };
-
-const transformAddon = (addon) => {
+const transformAddon = (addon) => { /* ... existing ... */
   if (!addon) return null;
   return {
     ...addon,
@@ -30,8 +35,7 @@ const transformAddon = (addon) => {
     options: addon.options ? addon.options.map(transformAddonOption) : [],
   };
 };
-
-const transformVariation = (variation) => {
+const transformVariation = (variation) => { /* ... existing ... */
   if (!variation) return null;
   return {
     ...variation,
@@ -40,57 +44,78 @@ const transformVariation = (variation) => {
   };
 };
 
-const transformFoodItem = (foodItem, isSnapshot = false) => {
-  if (!foodItem) return null;
-  const id = foodItem._id ? foodItem._id.toHexString() : (isSnapshot ? null : new ObjectId().toHexString());
+// Updated transformProduct
+const transformProduct = (product, isSnapshot = false) => {
+  if (!product) return null;
+  const id = product._id ? product._id.toHexString() : (isSnapshot ? null : new ObjectId().toHexString());
   return {
-    ...foodItem, _id: id, title: foodItem.title || "N/A", image: foodItem.image || null,
-    description: foodItem.description || null,
-    variations: foodItem.variations ? foodItem.variations.map(v => transformVariation(v)) : [],
-    isAvailable: foodItem.isAvailable !== undefined ? foodItem.isAvailable : true,
-    categoryId: foodItem.categoryId ? (typeof foodItem.categoryId === 'string' ? foodItem.categoryId : foodItem.categoryId.toHexString()) : null,
-    restaurantId: foodItem.restaurantId ? (typeof foodItem.restaurantId === 'string' ? foodItem.restaurantId : foodItem.restaurantId.toHexString()) : null,
+    ...product, _id: id, title: product.title || "N/A", image: product.image || null,
+    description: product.description || null,
+    variations: product.variations ? product.variations.map(v => transformVariation(v)) : [],
+    isAvailable: product.isAvailable !== undefined ? product.isAvailable : true,
+    categoryId: product.categoryId ? (typeof product.categoryId === 'string' ? product.categoryId : product.categoryId.toHexString()) : null,
+    storeId: product.storeId ? (typeof product.storeId === 'string' ? product.storeId : product.storeId.toHexString()) : null,
+    brand: product.brand || null,
+    sku: product.sku || null,
+    volumeMl: product.volumeMl || null,
+    nicotineMg: product.nicotineMg || null,
+    attributes: product.attributes ? product.attributes.map(transformAttribute) : [],
+    // Review aggregates - provide defaults
+    averageRating: product.averageRating || 0.0,
+    reviewCount: product.reviewCount || 0,
+    // reviews field will be handled by Product.reviews field resolver
   };
 };
 
-const transformCategory = async (db, category) => {
-  if (!category) return null;
-  let foods = [];
-  if (category.foodItemIds && category.foodItemIds.length > 0) {
-     const foodObjectIds = category.foodItemIds.map(id => new ObjectId(id));
-     foods = await db.collection(FOODITEMS_COLLECTION).find({ _id: { $in: foodObjectIds } }).toArray();
-     foods = foods.map(fi => transformFoodItem(fi));
-  } else {
-    foods = category.foods ? category.foods.map(fi => transformFoodItem(fi)) : [];
-  }
-  return {
-    ...category, _id: category._id.toHexString(), foods: foods,
-    restaurantId: category.restaurantId ? (typeof category.restaurantId === 'string' ? category.restaurantId : category.restaurantId.toHexString()) : null,
-  };
-};
-
-const transformRestaurant = async (db, restaurant, isSnapshot = false) => {
-  if (!restaurant) return null;
-  const id = restaurant._id ? restaurant._id.toHexString() : (isSnapshot ? null : new ObjectId().toHexString());
+// Updated transformStore
+const transformStore = async (db, store, isSnapshot = false) => {
+  if (!store) return null;
+  const id = store._id ? store._id.toHexString() : (isSnapshot ? null : new ObjectId().toHexString());
   let categories = [];
-  if (!isSnapshot && restaurant.categoryIds && restaurant.categoryIds.length > 0) {
-    const categoryObjectIds = restaurant.categoryIds.map(catId => new ObjectId(catId));
+  if (!isSnapshot && store.categoryIds && store.categoryIds.length > 0) {
+    const categoryObjectIds = store.categoryIds.map(catId => new ObjectId(catId));
     const fetchedCategories = await db.collection(CATEGORIES_COLLECTION).find({ _id: { $in: categoryObjectIds } }).toArray();
     categories = await Promise.all(fetchedCategories.map(cat => transformCategory(db, cat)));
-  } else if (restaurant.categories) {
-    categories = await Promise.all(restaurant.categories.map(cat => transformCategory(db, cat)));
+  } else if (store.categories && !isSnapshot) {
+    categories = await Promise.all(store.categories.map(cat => transformCategory(db, cat)));
+  } else if (isSnapshot && store.categories) {
+     categories = store.categories; 
   }
   return {
-    ...restaurant, _id: id, name: restaurant.name || "N/A", image: restaurant.image || null,
-    slug: restaurant.slug || (restaurant.name ? slugify(restaurant.name) : null),
-    address: restaurant.address || "N/A", location: restaurant.location,
-    reviewData: restaurant.reviewData || { total: 0, ratings: 0.0 },
-    rating: restaurant.rating || (restaurant.reviewData ? restaurant.reviewData.ratings : 0.0),
-    zone: restaurant.zone || null, categories: categories, openingTimes: restaurant.openingTimes || [],
+    ...store, _id: id, name: store.name || "N/A", image: store.image || null,
+    slug: store.slug || (store.name ? slugify(store.name) : null),
+    address: store.address || "N/A", location: store.location,
+    estimatedDeliveryTime: store.estimatedDeliveryTime || null,
+    minimumOrder: store.minimumOrder, tax: store.tax,
+    reviewData: store.reviewData || { total: 0, ratings: 0.0 }, // DEPRECATED
+    rating: store.rating || (store.reviewData ? store.reviewData.ratings : 0.0), // DEPRECATED
+    zone: store.zone || null, categories: categories, openingTimes: store.openingTimes || [],
+    isAvailable: store.isAvailable !== undefined ? store.isAvailable : true,
+    licenseNumber: store.licenseNumber || null,
+    storeType: store.storeType || "GENERAL_MERCHANDISE",
+    // Review aggregates - provide defaults
+    averageRating: store.averageRating || 0.0,
+    reviewCount: store.reviewCount || 0,
+    // reviews field will be handled by Store.reviews field resolver
   };
 };
 
-const transformAddressOutput = (address, isSnapshot = false) => {
+const transformCategory = async (db, category) => { /* ... existing ... */
+  if (!category) return null;
+  let products = [];
+  if (category.productIds && category.productIds.length > 0) {
+     const productObjectIds = category.productIds.map(id => new ObjectId(id));
+     products = await db.collection(PRODUCTS_COLLECTION).find({ _id: { $in: productObjectIds } }).toArray();
+     products = products.map(p => transformProduct(p));
+  } else {
+    products = category.products ? category.products.map(p => transformProduct(p)) : [];
+  }
+  return {
+    ...category, _id: category._id.toHexString(), products: products,
+    storeId: category.storeId ? (typeof category.storeId === 'string' ? category.storeId : category.storeId.toHexString()) : null,
+  };
+};
+const transformAddressOutput = (address, isSnapshot = false) => { /* ... existing ... */
   if (!address) return null;
   const id = address._id ? address._id.toHexString() : (isSnapshot ? null : new ObjectId().toHexString());
   return { 
@@ -99,34 +124,41 @@ const transformAddressOutput = (address, isSnapshot = false) => {
     selected: address.selected !== undefined ? address.selected : null,
   };
 };
-
-const findUserAndTransform = async (db, userId) => {
+const findUserAndTransform = async (db, userId) => { /* ... existing ... */
   const user = await db.collection(USERS_COLLECTION).findOne({ _id: userId });
   if (!user) return null;
   return {
-    ...user, _id: user._id.toHexString(), id: user._id.toHexString(),
-    name: user.name || "N/A", email: user.email || "N/A", phone: user.phone || null,
+    ...user, 
+    _id: user._id.toHexString(), 
+    id: user._id.toHexString(),
+    name: user.name || "N/A", 
+    email: user.email || "N/A", 
+    phone: user.phone || null,
     addresses: user.addresses && user.addresses.length > 0 ? user.addresses.map(addr => transformAddressOutput(addr)) : [],
+    idImageUrl: user.idImageUrl || null,
+    idVerificationStatus: user.idVerificationStatus || "NOT_UPLOADED",
+    dateOfBirth: user.dateOfBirth || null,
+    idRejectionReason: user.idRejectionReason || null,
+    emailIsVerified: user.emailIsVerified || false,
+    phoneIsVerified: user.phoneIsVerified || false,
   };
 };
-
-const transformOrderItem = async (db, orderItem) => {
+const transformOrderItem = async (db, orderItem) => { /* ... existing ... */
   return {
     ...orderItem, _id: orderItem._id.toHexString(),
-    foodItemSnapshot: transformFoodItem(orderItem.foodItemSnapshot, true),
+    productSnapshot: transformProduct(orderItem.productSnapshot, true), 
     variationSnapshot: transformVariation(orderItem.variationSnapshot),
     selectedAddons: orderItem.selectedAddons.map(sa => ({ ...sa })),
   };
 };
-
-const transformOrder = async (db, order) => {
+const transformOrder = async (db, order) => { /* ... existing ... */
   if (!order) return null;
   const items = await Promise.all(order.items.map(item => transformOrderItem(db, item)));
   const user = await findUserAndTransform(db, new ObjectId(order.userId));
-  const restaurant = await transformRestaurant(db, order.restaurantSnapshot, true);
+  const store = await transformStore(db, order.storeSnapshot, true); 
   return {
     ...order, _id: order._id.toHexString(), user: user || { id: order.userId.toHexString(), name: "User not found" },
-    restaurant: restaurant || { _id: order.restaurantId.toHexString(), name: "Restaurant not found" },
+    store: store || { _id: order.storeId.toHexString(), name: "Store not found" },
     items: items, deliveryAddress: transformAddressOutput(order.deliveryAddress, true),
     orderDate: new Date(order.orderDate).toISOString(), createdAt: new Date(order.createdAt).toISOString(),
     updatedAt: new Date(order.updatedAt).toISOString(),
@@ -138,47 +170,91 @@ const transformOrder = async (db, order) => {
     deliveredAt: order.deliveredAt ? new Date(order.deliveredAt).toISOString() : null,
     cancelledAt: order.cancelledAt ? new Date(order.cancelledAt).toISOString() : null,
     rejectedAt: order.rejectedAt ? new Date(order.rejectedAt).toISOString() : null,
-    // Include new payment fields, providing defaults if they might be missing from older documents
-    paymentStatus: order.paymentStatus || "PENDING", // Default to PENDING if not set
+    paymentStatus: order.paymentStatus || "PENDING",
     mockPaymentTransactionId: order.mockPaymentTransactionId || null,
+    deliveryIdImageUrl: order.deliveryIdImageUrl || null,
+    deliveryVerificationTimestamp: order.deliveryVerificationTimestamp ? new Date(order.deliveryVerificationTimestamp).toISOString() : null,
+    deliveryRecipientNameMatchesId: order.deliveryRecipientNameMatchesId === undefined ? null : order.deliveryRecipientNameMatchesId,
+    deliveryRecipientIsOfLegalAge: order.deliveryRecipientIsOfLegalAge === undefined ? null : order.deliveryRecipientIsOfLegalAge,
   };
 };
+
+// New transformReview helper
+const transformReview = async (db, review) => {
+  if (!review) return null;
+  const user = await findUserAndTransform(db, new ObjectId(review.userId));
+  return {
+    ...review,
+    _id: review._id.toHexString(),
+    user: user || { id: review.userId.toHexString(), name: "User not found" }, // Populate user
+    createdAt: new Date(review.createdAt).toISOString(),
+    updatedAt: new Date(review.updatedAt).toISOString(),
+  };
+};
+
+// New helper to update review aggregates
+const updateTargetReviewAggregates = async (db, targetId, targetType) => {
+  const reviews = await db.collection(REVIEWS_COLLECTION).find({ 
+    targetId: new ObjectId(targetId), 
+    targetType: targetType 
+  }).toArray();
+
+  const reviewCount = reviews.length;
+  const averageRating = reviewCount > 0 
+    ? reviews.reduce((sum, rev) => sum + rev.rating, 0) / reviewCount 
+    : 0.0;
+
+  const collectionToUpdate = targetType === "STORE" ? STORES_COLLECTION : PRODUCTS_COLLECTION;
+  
+  await db.collection(collectionToUpdate).updateOne(
+    { _id: new ObjectId(targetId) },
+    { $set: { 
+        averageRating: parseFloat(averageRating.toFixed(2)), // Store with 2 decimal places
+        reviewCount: reviewCount,
+        updatedAt: new Date() 
+      } 
+    }
+  );
+};
+
 
 // --- Resolvers ---
 const resolvers = {
   Query: {
-    getConfiguration: () => {
+    // ... (Existing Query resolvers) ...
+    getConfiguration: () => { /* ... existing ... */
         return {
             _id: "global_configuration", currency: config.APP_CURRENCY, currencySymbol: config.APP_CURRENCY_SYMBOL,
             deliveryRatePerKm: config.DELIVERY_RATE_PER_KM, maxDeliveryDistanceKm: config.MAX_DELIVERY_DISTANCE_KM,
             googleApiKey: config.GOOGLE_API_KEY_CLIENT, stripePublishableKey: config.STRIPE_PUBLISHABLE_KEY_CLIENT,
             twilioEnabled: config.TWILIO_ENABLED, skipEmailVerification: config.SKIP_EMAIL_VERIFICATION,
             skipMobileVerification: config.SKIP_MOBILE_VERIFICATION, appMinimumVersion: config.APP_MINIMUM_VERSION,
+            defaultAgeLimit: config.DEFAULT_AGE_LIMIT, idImageStorageBucket: config.ID_IMAGE_STORAGE_BUCKET,
         };
     },
     health: () => 'Server is up and running!',
-    userProfile: async (_, __, context) => {
+    userProfile: async (_, __, context) => { /* ... existing ... */
       if (!context.user || !context.user.id) throw new AuthenticationError('Not authenticated.');
       const db = getDB();
       return findUserAndTransform(db, new ObjectId(context.user.id));
     },
-    nearByRestaurants: async (_, { latitude, longitude, radius }) => {
+    nearByStores: async (_, { latitude, longitude, radius }) => { /* ... existing ... */
       const db = getDB();
       const searchRadiusMeters = (radius || 5.0) * 1000;
-      const restaurants = await db.collection(RESTAURANTS_COLLECTION).find({
+      const stores = await db.collection(STORES_COLLECTION).find({
         location: { $nearSphere: { $geometry: { type: "Point", coordinates: [longitude, latitude] }, $maxDistance: searchRadiusMeters } }
       }).toArray();
-      return Promise.all(restaurants.map(r => transformRestaurant(db, r)));
+      return Promise.all(stores.map(s => transformStore(db, s)));
     },
-    restaurant: async (_, { id, slug }) => {
+    store: async (_, { id, slug }) => { /* ... existing ... */
       if (!id && !slug) throw new UserInputError("Either ID or slug must be provided.");
       const db = getDB();
       const query = id ? { _id: new ObjectId(id) } : { slug: slug };
-      const restaurantDoc = await db.collection(RESTAURANTS_COLLECTION).findOne(query);
-      if (!restaurantDoc) return null;
-      return transformRestaurant(db, restaurantDoc);
+      const storeDoc = await db.collection(STORES_COLLECTION).findOne(query);
+      if (!storeDoc) return null;
+      return transformStore(db, storeDoc);
     },
-    myOrders: async (_, { offset = 0, limit = 10 }, context) => {
+    myOrders: async (_, { offset = 0, limit = 10 }, context) => { /* ... existing ... */
       if (!context.user || !context.user.id) throw new AuthenticationError('Not authenticated.');
       const db = getDB();
       const userIdObj = new ObjectId(context.user.id);
@@ -190,7 +266,7 @@ const resolvers = {
         .toArray();
       return Promise.all(orders.map(order => transformOrder(db, order)));
     },
-    orderDetails: async (_, { orderId }, context) => {
+    orderDetails: async (_, { orderId }, context) => { /* ... existing ... */
       if (!context.user || !context.user.id) throw new AuthenticationError('Not authenticated.');
       const db = getDB();
       let orderDoc;
@@ -203,9 +279,31 @@ const resolvers = {
       if (!orderDoc) throw new AuthenticationError('Order not found or access denied.');
       return transformOrder(db, orderDoc);
     },
+    // New Review Queries
+    reviewsForStore: async (_, { storeId, offset = 0, limit = 10 }) => {
+      const db = getDB();
+      const reviews = await db.collection(REVIEWS_COLLECTION)
+        .find({ targetId: new ObjectId(storeId), targetType: "STORE" })
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .toArray();
+      return Promise.all(reviews.map(review => transformReview(db, review)));
+    },
+    reviewsForProduct: async (_, { productId, offset = 0, limit = 10 }) => {
+      const db = getDB();
+      const reviews = await db.collection(REVIEWS_COLLECTION)
+        .find({ targetId: new ObjectId(productId), targetType: "PRODUCT" })
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .toArray();
+      return Promise.all(reviews.map(review => transformReview(db, review)));
+    },
   },
   Mutation: {
-    register: async (_, { name, email, password, phone }) => { 
+    // ... (Existing mutations: register, login, etc.)
+    register: async (_, { name, email, password, phone }) => { /* ... existing ... */ 
       const db = getDB();
       const existingUser = await db.collection(USERS_COLLECTION).findOne({ email });
       if (existingUser) throw new UserInputError('Email already in use.');
@@ -214,12 +312,13 @@ const resolvers = {
       const newUserDoc = {
         _id: new ObjectId(), name, email, password: hashedPassword, phone: phone || null,
         emailIsVerified: false, phoneIsVerified: false, addresses: [], createdAt: new Date(), updatedAt: new Date(),
+        idImageUrl: null, idVerificationStatus: "NOT_UPLOADED", dateOfBirth: null, idRejectionReason: null,
       };
       await db.collection(USERS_COLLECTION).insertOne(newUserDoc);
       const token = jwt.sign({ id: newUserDoc._id.toHexString(), email: newUserDoc.email }, JWT_SECRET, { expiresIn: '1h' });
       return { token, userId: newUserDoc._id.toHexString(), name: newUserDoc.name, email: newUserDoc.email };
     },
-    login: async (_, { email, password }) => { 
+    login: async (_, { email, password }) => { /* ... existing ... */ 
         const db = getDB();
         const user = await db.collection(USERS_COLLECTION).findOne({ email });
         if (!user) throw new AuthenticationError('Invalid credentials.');
@@ -228,19 +327,21 @@ const resolvers = {
         const token = jwt.sign({ id: user._id.toHexString(), email: user.email }, JWT_SECRET, { expiresIn: '1h' });
         return { token, userId: user._id.toHexString(), name: user.name, email: user.email };
     },
-    updateUserProfile: async (_, { name, phone }, context) => { 
+    updateUserProfile: async (_, { name, phone }, context) => { /* ... existing ... */ 
         if (!context.user) throw new AuthenticationError('Not authenticated.');
         const db = getDB();
         const userIdObj = new ObjectId(context.user.id);
         const updates = {updatedAt: new Date()};
         if (name !== undefined) updates.name = name;
         if (phone !== undefined) { updates.phone = phone; updates.phoneIsVerified = false; }
-        if (Object.keys(updates).length <= 1) throw new UserInputError('No updates provided.');
+        if (Object.keys(updates).length <= 1 && Object.keys(updates).includes("updatedAt")) {
+             throw new UserInputError('No updates provided.');
+        }
         await db.collection(USERS_COLLECTION).updateOne({ _id: userIdObj }, { $set: updates });
         return findUserAndTransform(db, userIdObj);
     },
     sendOtpToEmail: async (_, { email }) => { console.log(`OTP for email ${email} (simulated)`); return true; },
-    verifyEmailOtp: async (_, { email, otp }) => { 
+    verifyEmailOtp: async (_, { email, otp }) => { /* ... existing ... */ 
         console.log(`Verify OTP for email ${email} with ${otp} (simulated)`);
         const db = getDB();
         const user = await db.collection(USERS_COLLECTION).findOne({ email });
@@ -251,7 +352,7 @@ const resolvers = {
         return { token, userId: user._id.toHexString(), name: user.name, email: user.email };
     },
     sendOtpToPhone: async (_, { phone }) => { console.log(`OTP for phone ${phone} (simulated)`); return true; },
-    verifyPhoneOtp: async (_, { otp }, context) => { 
+    verifyPhoneOtp: async (_, { otp }, context) => { /* ... existing ... */ 
         if (!context.user) throw new AuthenticationError('Not authenticated.');
         const db = getDB();
         const userIdObj = new ObjectId(context.user.id);
@@ -263,19 +364,19 @@ const resolvers = {
         const token = jwt.sign({ id: userIdObj.toHexString(), email: user.email }, JWT_SECRET, { expiresIn: '1h' });
         return { token, userId: userIdObj.toHexString(), name: user.name, email: user.email };
     },
-    createAddress: async (_, { addressInput }, context) => {
+    createAddress: async (_, { addressInput }, context) => { /* ... existing ... */
         if (!context.user) throw new AuthenticationError('Not authenticated.');
         const db = getDB();
         const userIdObj = new ObjectId(context.user.id);
-        const user = await db.collection(USERS_COLLECTION).findOne({ _id: userIdObj }); 
-        if (!user) throw new AuthenticationError('User not found.');
+        const userDoc = await db.collection(USERS_COLLECTION).findOne({ _id: userIdObj }); 
+        if (!userDoc) throw new AuthenticationError('User not found.');
         const newAddress = {
             _id: new ObjectId(), label: addressInput.label, deliveryAddress: addressInput.deliveryAddress,
             details: addressInput.details, location: { type: addressInput.location.type || "Point", coordinates: addressInput.location.coordinates },
-            selected: !user.addresses || user.addresses.length === 0,
+            selected: !userDoc.addresses || userDoc.addresses.length === 0,
         };
         await db.collection(USERS_COLLECTION).updateOne({ _id: userIdObj }, { $push: { addresses: newAddress }, $set: {updatedAt: new Date()} });
-        if (newAddress.selected && user.addresses && user.addresses.length > 0) {
+        if (newAddress.selected && userDoc.addresses && userDoc.addresses.length > 0) {
             await db.collection(USERS_COLLECTION).updateOne(
               { _id: userIdObj, "addresses._id": { $ne: newAddress._id } },
               { $set: { "addresses.$[elem].selected": false } },
@@ -284,7 +385,7 @@ const resolvers = {
         }
         return findUserAndTransform(db, userIdObj);
     },
-    updateAddress: async (_, { addressId, addressInput }, context) => {
+    updateAddress: async (_, { addressId, addressInput }, context) => { /* ... existing ... */
         if (!context.user) throw new AuthenticationError('Not authenticated.');
         const db = getDB();
         const userIdObj = new ObjectId(context.user.id);
@@ -301,7 +402,7 @@ const resolvers = {
         await db.collection(USERS_COLLECTION).updateOne({ _id: userIdObj, "addresses._id": addressIdObj }, { $set: updates, $currentDate: {updatedAt: true} });
         return findUserAndTransform(db, userIdObj);
     },
-    deleteAddress: async (_, { addressId }, context) => {
+    deleteAddress: async (_, { addressId }, context) => { /* ... existing ... */
         if (!context.user) throw new AuthenticationError('Not authenticated.');
         const db = getDB();
         const userIdObj = new ObjectId(context.user.id);
@@ -321,7 +422,7 @@ const resolvers = {
         }
         return findUserAndTransform(db, userIdObj);
     },
-    selectAddress: async (_, { addressId }, context) => {
+    selectAddress: async (_, { addressId }, context) => { /* ... existing ... */
         if (!context.user) throw new AuthenticationError('Not authenticated.');
         const db = getDB();
         const userIdObj = new ObjectId(context.user.id);
@@ -330,52 +431,60 @@ const resolvers = {
         await db.collection(USERS_COLLECTION).updateOne({ _id: userIdObj, "addresses._id": addressIdObj }, { $set: { "addresses.$.selected": true } });
         return findUserAndTransform(db, userIdObj);
     },
-    _ensureRestaurantIndex: async () => { console.log("Index check reminder."); return true; },
-    createRestaurant: async (_, { input }) => {
+    _ensureStoreIndex: async () => { /* ... existing ... */
+      console.log("Ensure a 2dsphere index exists on 'stores.location' for geospatial queries. Mongo shell command: db.stores.createIndex({ location: '2dsphere' })");
+      return true;
+    },
+    createStore: async (_, { input }) => { /* ... existing ... */
         const db = getDB();
-        const newRestaurantDoc = { 
+        const newStore = {
             _id: new ObjectId(), name: input.name, image: input.image || null, slug: input.slug || slugify(input.name),
             address: input.address, location: { type: "Point", coordinates: input.location.coordinates },
-            deliveryTime: input.deliveryTime || null, minimumOrder: input.minimumOrder || 0, tax: input.tax || 0,
+            estimatedDeliveryTime: input.estimatedDeliveryTime || null, minimumOrder: input.minimumOrder || 0, tax: input.tax || 0,
             openingTimes: input.openingTimes ? input.openingTimes.map(ot => ({ day: ot.day, times: ot.times ? ot.times.map(ts => ({ startTime: ts.startTime, endTime: ts.endTime })) : [] })) : [],
             isAvailable: input.isAvailable !== undefined ? input.isAvailable : true, categoryIds: [],
-            reviewData: { total: 0, ratings: 0.0 }, rating: 0.0, createdAt: new Date(), updatedAt: new Date(),
+            reviewData: { total: 0, ratings: 0.0 }, rating: 0.0, // DEPRECATED
+            averageRating: 0.0, reviewCount: 0, // Initialize new review fields
+            createdAt: new Date(), updatedAt: new Date(),
+            licenseNumber: input.licenseNumber || null, storeType: input.storeType || "GENERAL_MERCHANDISE",
         };
-        await db.collection(RESTAURANTS_COLLECTION).insertOne(newRestaurantDoc);
-        return transformRestaurant(db, newRestaurantDoc);
+        await db.collection(STORES_COLLECTION).insertOne(newStore);
+        return transformStore(db, newStore);
     },
-    updateRestaurant: async (_, { id, input }) => {
+    updateStore: async (_, { id, input }) => { /* ... existing ... */
         const db = getDB();
-        const restaurantIdObj = new ObjectId(id);
+        const storeIdObj = new ObjectId(id);
         const updates = { updatedAt: new Date() };
         if (input.name) { updates.name = input.name; updates.slug = input.slug || slugify(input.name); }
         if (input.slug) updates.slug = input.slug;
         if (input.image !== undefined) updates.image = input.image;
         if (input.address) updates.address = input.address;
         if (input.location) updates.location = { type: "Point", coordinates: input.location.coordinates };
-        if (input.deliveryTime !== undefined) updates.deliveryTime = input.deliveryTime;
+        if (input.estimatedDeliveryTime !== undefined) updates.estimatedDeliveryTime = input.estimatedDeliveryTime;
         if (input.minimumOrder !== undefined) updates.minimumOrder = input.minimumOrder;
         if (input.tax !== undefined) updates.tax = input.tax;
         if (input.openingTimes) updates.openingTimes = input.openingTimes.map(ot => ({ day: ot.day, times: ot.times ? ot.times.map(ts => ({startTime: ts.startTime, endTime: ts.endTime})) : [] }));
         if (input.isAvailable !== undefined) updates.isAvailable = input.isAvailable;
-        await db.collection(RESTAURANTS_COLLECTION).updateOne({ _id: restaurantIdObj }, { $set: updates });
-        const updatedDoc = await db.collection(RESTAURANTS_COLLECTION).findOne({ _id: restaurantIdObj });
-        return transformRestaurant(db, updatedDoc);
+        if (input.licenseNumber !== undefined) updates.licenseNumber = input.licenseNumber;
+        if (input.storeType !== undefined) updates.storeType = input.storeType;
+        await db.collection(STORES_COLLECTION).updateOne({ _id: storeIdObj }, { $set: updates });
+        const updatedStoreDoc = await db.collection(STORES_COLLECTION).findOne({ _id: storeIdObj });
+        return transformStore(db, updatedStoreDoc);
     },
-    createCategory: async (_, { input }) => {
+    createCategory: async (_, { input }) => { /* ... existing ... */
         const db = getDB();
-        const restaurantIdObj = new ObjectId(input.restaurantId);
-        const restaurant = await db.collection(RESTAURANTS_COLLECTION).findOne({ _id: restaurantIdObj });
-        if (!restaurant) throw new UserInputError("Restaurant not found for this category.");
+        const storeIdObj = new ObjectId(input.storeId);
+        const store = await db.collection(STORES_COLLECTION).findOne({ _id: storeIdObj });
+        if (!store) throw new UserInputError("Store not found for this category.");
         const newCategoryDoc = {
-            _id: new ObjectId(), title: input.title, restaurantId: restaurantIdObj, foodItemIds: [],
+            _id: new ObjectId(), title: input.title, storeId: storeIdObj, productIds: [],
             createdAt: new Date(), updatedAt: new Date(),
         };
         await db.collection(CATEGORIES_COLLECTION).insertOne(newCategoryDoc);
-        await db.collection(RESTAURANTS_COLLECTION).updateOne({ _id: restaurantIdObj }, { $addToSet: { categoryIds: newCategoryDoc._id }, $currentDate: {updatedAt: true} });
+        await db.collection(STORES_COLLECTION).updateOne({ _id: storeIdObj }, { $addToSet: { categoryIds: newCategoryDoc._id }, $currentDate: {updatedAt: true} });
         return transformCategory(db, newCategoryDoc);
     },
-    updateCategory: async (_, { id, input }) => {
+    updateCategory: async (_, { id, input }) => { /* ... existing ... */
         const db = getDB();
         const categoryIdObj = new ObjectId(id);
         const updates = { updatedAt: new Date() };
@@ -384,115 +493,125 @@ const resolvers = {
         const updatedDoc = await db.collection(CATEGORIES_COLLECTION).findOne({ _id: categoryIdObj });
         return transformCategory(db, updatedDoc);
     },
-    createFoodItem: async (_, { input }) => {
+    createProduct: async (_, { input }) => { /* ... existing ... */
         const db = getDB();
         const categoryIdObj = new ObjectId(input.categoryId);
-        const restaurantIdObj = new ObjectId(input.restaurantId);
-        const category = await db.collection(CATEGORIES_COLLECTION).findOne({ _id: categoryIdObj, restaurantId: restaurantIdObj });
-        if (!category) throw new UserInputError("Category not found or not associated with the given restaurant.");
-        const newFoodItemDoc = {
+        const storeIdObj = new ObjectId(input.storeId);
+        const category = await db.collection(CATEGORIES_COLLECTION).findOne({ _id: categoryIdObj, storeId: storeIdObj });
+        if (!category) throw new UserInputError("Category not found or not associated with the given store.");
+        const newProduct = {
             _id: new ObjectId(), title: input.title, image: input.image || null, description: input.description || null,
             variations: input.variations ? input.variations.map(v => ({ _id: new ObjectId(), title: v.title, price: v.price, discounted: v.discounted || null, addons: v.addons ? v.addons.map(a => ({ _id: new ObjectId(), title: a.title, description: a.description || null, options: a.options ? a.options.map(o => ({ _id: new ObjectId(), title: o.title, description: o.description || null, price: o.price })) : [], quantityMinimum: a.quantityMinimum, quantityMaximum: a.quantityMaximum })) : [] })) : [],
-            categoryId: categoryIdObj, restaurantId: restaurantIdObj,
+            categoryId: categoryIdObj, storeId: storeIdObj,
             isAvailable: input.isAvailable !== undefined ? input.isAvailable : true,
             createdAt: new Date(), updatedAt: new Date(),
+            brand: input.brand || null, sku: input.sku || null, volumeMl: input.volumeMl || null,
+            nicotineMg: input.nicotineMg || null,
+            attributes: input.attributes ? input.attributes.map(attr => ({ key: attr.key, value: attr.value })) : [],
+            averageRating: 0.0, reviewCount: 0, // Initialize new review fields
         };
-        await db.collection(FOODITEMS_COLLECTION).insertOne(newFoodItemDoc);
-        await db.collection(CATEGORIES_COLLECTION).updateOne({ _id: categoryIdObj }, { $addToSet: { foodItemIds: newFoodItemDoc._id }, $currentDate: {updatedAt: true} });
-        return transformFoodItem(newFoodItemDoc);
+        await db.collection(PRODUCTS_COLLECTION).insertOne(newProduct);
+        await db.collection(CATEGORIES_COLLECTION).updateOne(
+          { _id: categoryIdObj },
+          { $addToSet: { productIds: newProduct._id }, $currentDate: {updatedAt: true} }
+        );
+        return transformProduct(newProduct);
     },
-    updateFoodItem: async (_, { id, input }) => {
+    updateProduct: async (_, { id, input }) => { /* ... existing ... */
         const db = getDB();
-        const foodItemIdObj = new ObjectId(id);
+        const productIdObj = new ObjectId(id);
         const updates = { updatedAt: new Date() };
         if (input.title) updates.title = input.title;
         if (input.image !== undefined) updates.image = input.image;
         if (input.description !== undefined) updates.description = input.description;
         if (input.isAvailable !== undefined) updates.isAvailable = input.isAvailable;
-        if (input.variations) {
+        if (input.variations) { 
             updates.variations = input.variations.map(v => ({
                 _id: v._id ? new ObjectId(v._id) : new ObjectId(), title: v.title, price: v.price, discounted: v.discounted || null,
                 addons: v.addons ? v.addons.map(a => ({ _id: a._id ? new ObjectId(a._id) : new ObjectId(), title: a.title, description: a.description || null, options: a.options ? a.options.map(o => ({ _id: o._id ? new ObjectId(o._id) : new ObjectId(), title: o.title, description: o.description || null, price: o.price })) : [], quantityMinimum: a.quantityMinimum, quantityMaximum: a.quantityMaximum })) : [],
             }));
         }
-        await db.collection(FOODITEMS_COLLECTION).updateOne({ _id: foodItemIdObj }, { $set: updates });
-        const updatedDoc = await db.collection(FOODITEMS_COLLECTION).findOne({ _id: foodItemIdObj });
-        return transformFoodItem(updatedDoc);
+        if (input.brand !== undefined) updates.brand = input.brand;
+        if (input.sku !== undefined) updates.sku = input.sku;
+        if (input.volumeMl !== undefined) updates.volumeMl = input.volumeMl;
+        if (input.nicotineMg !== undefined) updates.nicotineMg = input.nicotineMg;
+        if (input.attributes !== undefined) updates.attributes = input.attributes.map(attr => ({ key: attr.key, value: attr.value }));
+        await db.collection(PRODUCTS_COLLECTION).updateOne({ _id: productIdObj }, { $set: updates });
+        const updatedProductDoc = await db.collection(PRODUCTS_COLLECTION).findOne({ _id: productIdObj });
+        return transformProduct(updatedProductDoc);
     },
-    placeOrder: async (_, { restaurantId, items, paymentMethod, addressId, tipping, notes, preparationTimeMinutes }, context) => {
+    placeOrder: async (_, { storeId, items, paymentMethod, addressId, tipping, notes, preparationTimeMinutes }, context) => { /* ... existing ... */
       if (!context.user || !context.user.id) throw new AuthenticationError('Not authenticated.');
       const db = getDB();
       const userIdObj = new ObjectId(context.user.id);
       const user = await db.collection(USERS_COLLECTION).findOne({ _id: userIdObj });
       if (!user) throw new AuthenticationError('User not found.');
+      if (user.idVerificationStatus !== "VERIFIED") {
+        throw new AuthenticationError('Your ID has not been verified yet. Please complete ID verification to place an order.');
+      }
       const deliveryAddress = user.addresses.find(addr => addr._id.equals(new ObjectId(addressId)));
       if (!deliveryAddress) throw new UserInputError('Delivery address not found for user.');
-      const restaurantObjId = new ObjectId(restaurantId);
-      const restaurant = await db.collection(RESTAURANTS_COLLECTION).findOne({ _id: restaurantObjId });
-      if (!restaurant || !restaurant.isAvailable) throw new UserInputError('Restaurant not found or is currently unavailable.');
+      const storeObjId = new ObjectId(storeId);
+      const store = await db.collection(STORES_COLLECTION).findOne({ _id: storeObjId });
+      if (!store || !store.isAvailable) throw new UserInputError('Store not found or is currently unavailable.');
       let subTotal = 0;
       const orderItems = [];
-      for (const itemInput of items) {
-        const foodItemObjId = new ObjectId(itemInput.foodItemId);
-        const foodItem = await db.collection(FOODITEMS_COLLECTION).findOne({ _id: foodItemObjId, restaurantId: restaurantObjId });
-        if (!foodItem || !foodItem.isAvailable) throw new UserInputError(`Food item ${itemInput.foodItemId} not found or unavailable.`);
-        const variation = foodItem.variations.find(v => v._id.equals(new ObjectId(itemInput.variationId)));
-        if (!variation) throw new UserInputError(`Variation ${itemInput.variationId} not found for food item ${itemInput.foodItemId}.`);
-        let currentItemUnitPrice = variation.discounted !== null && variation.discounted < variation.price ? variation.discounted : variation.price;
-        const selectedAddonsSnapshots = [];
-        if (itemInput.addons && itemInput.addons.length > 0) {
-          for (const addonInput of itemInput.addons) {
-            const addonDef = variation.addons.find(a => a._id.equals(new ObjectId(addonInput.addonId)));
-            if (!addonDef) throw new UserInputError(`Addon ${addonInput.addonId} not found in variation.`);
-            const optionDef = addonDef.options.find(o => o._id.equals(new ObjectId(addonInput.selectedOptionId)));
-            if (!optionDef) throw new UserInputError(`Addon option ${addonInput.selectedOptionId} not found for addon ${addonInput.addonId}.`);
-            currentItemUnitPrice += optionDef.price;
-            selectedAddonsSnapshots.push({ addonTitle: addonDef.title, optionTitle: optionDef.title, priceAtOrder: optionDef.price });
-          }
-        }
-        const foodItemSnapshot = { _id: foodItem._id, title: foodItem.title, image: foodItem.image };
-        const variationSnapshot = { _id: variation._id, title: variation.title, price: variation.price, discounted: variation.discounted };
-        orderItems.push({
-          _id: new ObjectId(), foodItemId: foodItem._id, foodItemSnapshot: foodItemSnapshot,
-          variationId: variation._id, variationSnapshot: variationSnapshot, quantity: itemInput.quantity,
-          selectedAddons: selectedAddonsSnapshots, unitPrice: currentItemUnitPrice,
-          totalItemPrice: currentItemUnitPrice * itemInput.quantity,
-        });
-        subTotal += currentItemUnitPrice * itemInput.quantity;
+      for (const itemInput of items) { 
+            const productObjId = new ObjectId(itemInput.productId);
+            const product = await db.collection(PRODUCTS_COLLECTION).findOne({ _id: productObjId, storeId: storeObjId });
+            if (!product || !product.isAvailable) throw new UserInputError(`Product ${itemInput.productId} not found or unavailable.`);
+            const variation = product.variations.find(v => v._id.equals(new ObjectId(itemInput.variationId)));
+            if (!variation) throw new UserInputError(`Variation ${itemInput.variationId} not found for product ${itemInput.productId}.`);
+            let currentItemUnitPrice = variation.discounted !== null && variation.discounted < variation.price ? variation.discounted : variation.price;
+            const selectedAddonsSnapshots = [];
+            if (itemInput.addons && itemInput.addons.length > 0) {
+                for (const addonInput of itemInput.addons) {
+                    const addonDef = variation.addons.find(a => a._id.equals(new ObjectId(addonInput.addonId)));
+                    if (!addonDef) throw new UserInputError(`Addon ${addonInput.addonId} not found in variation.`);
+                    const optionDef = addonDef.options.find(o => o._id.equals(new ObjectId(addonInput.selectedOptionId)));
+                    if (!optionDef) throw new UserInputError(`Addon option ${addonInput.selectedOptionId} not found for addon ${addonInput.addonId}.`);
+                    currentItemUnitPrice += optionDef.price;
+                    selectedAddonsSnapshots.push({ addonTitle: addonDef.title, optionTitle: optionDef.title, priceAtOrder: optionDef.price });
+                }
+            }
+            const productSnapshot = { _id: product._id, title: product.title, image: product.image, brand: product.brand, sku: product.sku, volumeMl: product.volumeMl, nicotineMg: product.nicotineMg, attributes: product.attributes };
+            const variationSnapshot = { _id: variation._id, title: variation.title, price: variation.price, discounted: variation.discounted };
+            orderItems.push({
+                _id: new ObjectId(), productId: product._id, productSnapshot: productSnapshot,
+                variationId: variation._id, variationSnapshot: variationSnapshot, quantity: itemInput.quantity,
+                selectedAddons: selectedAddonsSnapshots, unitPrice: currentItemUnitPrice,
+                totalItemPrice: currentItemUnitPrice * itemInput.quantity,
+            });
+            subTotal += currentItemUnitPrice * itemInput.quantity;
       }
-      const restaurantTaxRate = restaurant.tax || 0;
-      const taxAmount = subTotal * (restaurantTaxRate / 100);
-      const deliveryCharges = 5.0; // Placeholder
+      const storeTaxRate = store.tax || 0;
+      const taxAmount = subTotal * (storeTaxRate / 100);
+      const deliveryCharges = 5.0; 
       const finalTipping = tipping || 0;
       const totalAmount = subTotal + taxAmount + deliveryCharges + finalTipping;
       const now = new Date();
-
-      // Simulate Payment Processing
-      console.log(`Simulating payment processing for paymentMethod: ${paymentMethod}`);
       const mockTransactionId = `MOCK_TXN_${new ObjectId().toHexString()}`;
-      const paymentStatus = "SUCCESSFUL"; // Assume success for mock
-
+      const paymentStatus = "SUCCESSFUL";
       const newOrder = {
         _id: new ObjectId(), orderId: `ORD-${now.getTime().toString().slice(-6)}-${String(Math.floor(Math.random()*1000)).padStart(3,'0')}`,
-        userId: userIdObj, restaurantId: restaurantObjId,
-        restaurantSnapshot: { _id: restaurant._id, name: restaurant.name, image: restaurant.image, address: restaurant.address },
+        userId: userIdObj, storeId: storeObjId,
+        storeSnapshot: { _id: store._id, name: store.name, image: store.image, address: store.address, storeType: store.storeType, licenseNumber: store.licenseNumber },
         items: orderItems, deliveryAddress: { ...deliveryAddress, _id: deliveryAddress._id }, paymentMethod: paymentMethod,
-        status: "PENDING", // Order status remains PENDING until restaurant confirms
-        tipping: finalTipping, taxAmount: parseFloat(taxAmount.toFixed(2)),
+        status: "PENDING", tipping: finalTipping, taxAmount: parseFloat(taxAmount.toFixed(2)),
         deliveryCharges: parseFloat(deliveryCharges.toFixed(2)), subTotal: parseFloat(subTotal.toFixed(2)),
         totalAmount: parseFloat(totalAmount.toFixed(2)), notes: notes || null, orderDate: now.toISOString(),
         expectedDeliveryTime: null, preparationTimeMinutes: preparationTimeMinutes || 30,
         createdAt: now.toISOString(), updatedAt: now.toISOString(),
         confirmedAt: null, preparingAt: null, readyForPickupAt: null, pickedUpAt: null,
         deliveredAt: null, cancelledAt: null, rejectedAt: null,
-        // Add new payment fields
-        paymentStatus: paymentStatus,
-        mockPaymentTransactionId: mockTransactionId,
+        paymentStatus: paymentStatus, mockPaymentTransactionId: mockTransactionId,
+        deliveryIdImageUrl: null, deliveryVerificationTimestamp: null,
+        deliveryRecipientNameMatchesId: null, deliveryRecipientIsOfLegalAge: null,
       };
       await db.collection(ORDERS_COLLECTION).insertOne(newOrder);
       return transformOrder(db, newOrder);
     },
-    updateOrderStatus: async (_, { orderId, status }, context) => {
+    updateOrderStatus: async (_, { orderId, status }, context) => { /* ... existing ... */
       if (!context.user || !context.user.id) throw new AuthenticationError('Not authenticated.');
       const db = getDB();
       let orderToUpdate; let orderObjectId;
@@ -520,8 +639,145 @@ const resolvers = {
       pubsub.publish(`${ORDER_STATUS_CHANGED_TOPIC}_USER_${orderToUpdate.userId.toHexString()}`, { orderStatusChanged: transformedUpdatedOrder });
       return transformedUpdatedOrder;
     },
+    uploadIdImage: async (_, { imageUrl }, context) => { /* ... existing ... */
+      if (!context.user || !context.user.id) {
+        throw new AuthenticationError('You must be logged in to upload an ID image.');
+      }
+      const db = getDB();
+      const userIdObj = new ObjectId(context.user.id);
+      const updates = {
+        idImageUrl: imageUrl, idVerificationStatus: "PENDING_VERIFICATION",
+        idRejectionReason: null, updatedAt: new Date(),
+      };
+      const result = await db.collection(USERS_COLLECTION).updateOne({ _id: userIdObj }, { $set: updates });
+      if (result.matchedCount === 0) {
+        throw new ApolloError('User not found, could not update ID image.', 'USER_NOT_FOUND');
+      }
+      return findUserAndTransform(db, userIdObj);
+    },
+    _admin_updateIdVerificationStatus: async (_, { userId, status, dateOfBirth, rejectionReason }, context) => { /* ... existing ... */
+      if (!context.user || !context.user.id) {
+        throw new AuthenticationError('Admin action: Not authenticated.');
+      }
+      console.log(`Admin action by ${context.user.id}: Updating ID verification for user ${userId} to ${status}`);
+      const db = getDB();
+      const targetUserIdObj = new ObjectId(userId);
+      const updates = { idVerificationStatus: status, updatedAt: new Date() };
+      if (status === "VERIFIED") {
+        if (!dateOfBirth) throw new UserInputError('Date of birth is required for VERIFIED status.');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) throw new UserInputError('Invalid date of birth format. Expected YYYY-MM-DD.');
+        updates.dateOfBirth = dateOfBirth;
+        updates.idRejectionReason = null;
+      } else if (status === "REJECTED") {
+        if (!rejectionReason || rejectionReason.trim() === "") throw new UserInputError('Rejection reason is required for REJECTED status.');
+        updates.idRejectionReason = rejectionReason;
+      } else if (status === "NOT_UPLOADED" || status === "PENDING_VERIFICATION") {
+        updates.idRejectionReason = null;
+      }
+      const result = await db.collection(USERS_COLLECTION).updateOne({ _id: targetUserIdObj }, { $set: updates });
+      if (result.matchedCount === 0) throw new ApolloError(`User with ID ${userId} not found.`, 'USER_NOT_FOUND');
+      return findUserAndTransform(db, targetUserIdObj);
+    },
+    confirmDeliveryWithId: async (_, { orderId, deliveryIdImageUrl, recipientNameMatchesId, recipientIsOfLegalAge }, context) => { /* ... existing ... */
+      if (!context.user || !context.user.id) {
+        throw new AuthenticationError('You must be logged in to confirm delivery.');
+      }
+      console.log(`Delivery confirmation attempt by user ${context.user.id} for order ${orderId}`);
+      const db = getDB();
+      let orderToUpdate; let orderObjectId;
+      if (ObjectId.isValid(orderId)) { orderObjectId = new ObjectId(orderId); orderToUpdate = await db.collection(ORDERS_COLLECTION).findOne({ _id: orderObjectId }); }
+      if (!orderToUpdate && !ObjectId.isValid(orderId)) { orderToUpdate = await db.collection(ORDERS_COLLECTION).findOne({ orderId: orderId }); if (orderToUpdate) orderObjectId = orderToUpdate._id; }
+      if (!orderToUpdate) { throw new UserInputError('Order not found.'); }
+      const updates = {
+        deliveryIdImageUrl: deliveryIdImageUrl, deliveryVerificationTimestamp: new Date().toISOString(),
+        deliveryRecipientNameMatchesId: recipientNameMatchesId, deliveryRecipientIsOfLegalAge: recipientIsOfLegalAge,
+        updatedAt: new Date(),
+      };
+      let publishUpdate = false;
+      if (recipientNameMatchesId && recipientIsOfLegalAge) {
+        updates.status = "DELIVERED"; updates.deliveredAt = new Date().toISOString(); publishUpdate = true;
+        console.log(`Order ${orderToUpdate.orderId} delivery verified and status set to DELIVERED.`);
+      } else {
+        console.warn(`Order ${orderToUpdate.orderId} delivery ID verification failed. Name Match: ${recipientNameMatchesId}, Legal Age: ${recipientIsOfLegalAge}. Order status NOT changed to DELIVERED.`);
+      }
+      await db.collection(ORDERS_COLLECTION).updateOne({ _id: orderObjectId }, { $set: updates });
+      const updatedOrderDoc = await db.collection(ORDERS_COLLECTION).findOne({ _id: orderObjectId });
+      const transformedUpdatedOrder = await transformOrder(db, updatedOrderDoc);
+      if (publishUpdate) {
+        pubsub.publish(`${ORDER_STATUS_CHANGED_TOPIC}_${orderObjectId.toHexString()}`, { orderStatusChanged: transformedUpdatedOrder });
+        pubsub.publish(`${ORDER_STATUS_CHANGED_TOPIC}_USER_${orderToUpdate.userId.toHexString()}`, { orderStatusChanged: transformedUpdatedOrder });
+      }
+      return transformedUpdatedOrder;
+    },
+
+    // New Review Mutation
+    submitReview: async (_, { input }, context) => {
+      if (!context.user || !context.user.id) {
+        throw new AuthenticationError('You must be logged in to submit a review.');
+      }
+      const db = getDB();
+      const userIdObj = new ObjectId(context.user.id);
+      const targetIdObj = new ObjectId(input.targetId);
+
+      if (input.rating < 1 || input.rating > 5) {
+        throw new UserInputError('Rating must be between 1 and 5.');
+      }
+
+      // Check if target exists
+      const targetCollection = input.targetType === "STORE" ? STORES_COLLECTION : PRODUCTS_COLLECTION;
+      const targetExists = await db.collection(targetCollection).findOne({ _id: targetIdObj });
+      if (!targetExists) {
+        throw new UserInputError(`${input.targetType} with ID ${input.targetId} not found.`);
+      }
+      
+      // Check for existing review by this user for this target
+      const existingReview = await db.collection(REVIEWS_COLLECTION).findOne({
+        userId: userIdObj,
+        targetId: targetIdObj,
+        targetType: input.targetType,
+      });
+
+      let savedReview;
+      const now = new Date();
+
+      if (existingReview) {
+        // Update existing review
+        const updateResult = await db.collection(REVIEWS_COLLECTION).findOneAndUpdate(
+          { _id: existingReview._id },
+          { $set: { 
+              rating: input.rating, 
+              comment: input.comment || null, 
+              updatedAt: now 
+            } 
+          },
+          { returnDocument: 'after' }
+        );
+        savedReview = updateResult.value;
+      } else {
+        // Create new review
+        const newReview = {
+          _id: new ObjectId(),
+          userId: userIdObj,
+          targetType: input.targetType,
+          targetId: targetIdObj,
+          rating: input.rating,
+          comment: input.comment || null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const insertResult = await db.collection(REVIEWS_COLLECTION).insertOne(newReview);
+        // insertOne doesn't return the document directly in all driver versions in the same way,
+        // so we use the newReview object which already has the _id.
+        savedReview = newReview; 
+      }
+
+      // Trigger update of aggregates (can be awaited or run in background)
+      await updateTargetReviewAggregates(db, input.targetId, input.targetType);
+      
+      return transformReview(db, savedReview);
+    },
   },
-  Subscription: {
+  Subscription: { /* ... existing ... */
     orderStatusChanged: {
       subscribe: async (_, { orderId }, context) => {
         if (!context.user || !context.user.id) throw new AuthenticationError('Not authenticated for subscription.');
@@ -535,6 +791,40 @@ const resolvers = {
       },
     },
   },
+  // New Field Resolvers for Store and Product
+  Store: {
+    reviews: async (parent, { offset = 0, limit = 10 }, { db }) => {
+      const reviews = await db.collection(REVIEWS_COLLECTION)
+        .find({ targetId: new ObjectId(parent._id), targetType: "STORE" })
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .toArray();
+      return Promise.all(reviews.map(review => transformReview(db, review)));
+    },
+    // averageRating and reviewCount are directly transformed from the parent document
+    averageRating: (parent) => parent.averageRating || 0.0,
+    reviewCount: (parent) => parent.reviewCount || 0,
+  },
+  Product: {
+    reviews: async (parent, { offset = 0, limit = 10 }, { db }) => {
+      const reviews = await db.collection(REVIEWS_COLLECTION)
+        .find({ targetId: new ObjectId(parent._id), targetType: "PRODUCT" })
+        .sort({ createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .toArray();
+      return Promise.all(reviews.map(review => transformReview(db, review)));
+    },
+    averageRating: (parent) => parent.averageRating || 0.0,
+    reviewCount: (parent) => parent.reviewCount || 0,
+  },
+  Review: { // Ensure User field in Review is resolved if not already handled by transformReview
+      user: async (parent, _, { db }) => {
+          if (parent.user && parent.user.id && parent.user.name) return parent.user; // Already populated by transformReview
+          return findUserAndTransform(db, new ObjectId(parent.userId));
+      }
+  }
 };
 
 module.exports = resolvers;
