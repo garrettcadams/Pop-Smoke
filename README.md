@@ -53,7 +53,7 @@
 
 <br>
 
-The Enatega Multi vendor food delivery system is perfect for customers looking to deploy a readymade and easy to use food ordering platform for their own food delivery and logistics business. Just like foodpanda and ubereats, our food delivery system can incorporate multiple restaurants as well as restaurants that operate in multiple locations. With access to the admin panel and separate applications for customers and riders, you can use this solution to create your own online food ordering and order/delivery management system instantaneously.
+The Enatega Multi vendor delivery system is perfect for customers looking to deploy a ready-made and easy to use ordering platform for their own delivery and logistics business. Our versatile system can incorporate multiple stores, including restaurants, smoke shops, and liquor stores, as well as stores that operate in multiple locations. With access to the admin panel and separate applications for customers and riders, you can use this solution to create your own online ordering and order/delivery management system instantaneously.
 
 Our solution is open source but the backend and API are proprietary, and can be obtained via paid license.
 
@@ -82,34 +82,68 @@ Our solution is open source but the backend and API are proprietary, and can be 
 
 ## :question: What is included: <a id="heading-1"></a>
 
-Our food delivery system also comes with the following:
+Our delivery system also comes with the following:
 
 - Enatega Multi vendor Customer App
 - Enatega Multi vendor Rider App
-- Enatega Multi vendor Restaurant App
-- Customer Food Ordering Website
+- Enatega Multi vendor Store App (formerly Restaurant App)
+- Customer Ordering Website
 - Admin Web Dashboard
-- Application ProgramInterface Server
+- API Server
 - Analytics Dashboard with Expo Amplitude
 - Error crash reporting with Sentry
 
 ## :fire: Features: <a id="heading-2"></a>
 
+**Core System Updates:**
+- **Generalized Terminology:** 'Restaurant' has been renamed to 'Store' and 'FoodItem' to 'Product' throughout the system to better accommodate a wider range of businesses.
+
+**Expanded Store Capabilities:**
+- **Support for Smoke Shops & Liquor Stores:** The platform now supports additional store types like smoke shops and liquor stores.
+- **Enhanced Product & Store Information:** New schema fields have been added for greater detail:
+    - **Store:** `license` (e.g., for liquor sales), `type` (e.g., restaurant, smoke shop, liquor store).
+    - **Product:** `brand`, `SKU`, and `attributes` (e.g., size, color, nicotine content for smoke shop products, alcohol percentage for liquor).
+
+**ID Verification Module (for age-restricted goods):**
+- **Multi-step ID Verification:**
+    - **User ID Verification:**
+        - Users can upload ID image URLs through their profile.
+        - Admins can verify or reject uploaded IDs and update the user's Date of Birth (DOB) in the system.
+        - A 'VERIFIED' ID status is required for users to place orders for age-restricted items.
+    - **Delivery ID Verification:**
+        - Rider app allows capturing or storing ID image URLs at the point of delivery.
+        - A specific mutation is used to confirm delivery along with the ID verification details.
+
+**Review System:**
+- **Store and Product Reviews:** A comprehensive review module allows customers to leave reviews for both stores and individual products.
+
+**Configuration Enhancements:**
+- **Age Limit Setting:** The configuration module now includes a `defaultAgeLimit` setting, crucial for stores selling age-restricted products.
+
+**Other Key Features:**
 - Authentication using Google, Apple, and Facebook
-- Different sections feature for promoting restaurants
+- Different sections feature for promoting stores
 - Push notifications and Emails to Users for account creation and order status changes
 - Real-time tracking of Rider and chat with Rider option
 - Email and Phone number verification
-- Location-based restaurants shown on Map and Home Screen
+- Location-based stores shown on Map and Home Screen
 - Multi-Language and different themes support
-- Rating and Review features for order
-- Details of restaurants include ratings and reviews, opening and closing timings, delivery timings, restaurant menu and items, restaurant location, minimum order
+- Store profiles display details such as:
+    - Ratings and reviews
+    - Opening and closing timings
+    - Delivery timings
+    - Menu and product listings
+    - Location information
+    - Minimum order requirements
 - Payment Integration for both PayPal and Stripe
-- Previous order history and adding favorite restaurants
+- Previous order history and adding favorite stores
 - Adding address with Google Places suggestions and Maps integration
 - Analytics and Error reporting with Amplitude and Sentry
-- Options to add different variations of food items and adding notes to restaurant
-  Pick up and delivery option with different timings
+- Options to add different variations of products and adding notes to the store
+- Pick up and delivery option with different timings
+
+**Platform Updates:**
+- **Placeholders Updated:** Placeholders for notifications, payments, and subscriptions have been updated to reflect the latest functionalities and integrations.
 
 ## :repeat_one: Setup: <a id="heading-3"></a>
 
@@ -125,38 +159,38 @@ The version of nodejs should be between 18 to 20 (with 16 as minor version and 0
 
 ## :information_source: Prerequisites: <a id="heading-4"></a>
 
-App Ids for Mobile App in app.json
+App IDs for Mobile App in `app.json`:
 
 - Facebook Scheme
-- Facebook App Id
+- Facebook App ID
 - Facebook Display Name
-- iOS Client Id Google
-- Android Id Google
-- Amplitude Api Key
-- server url
+- iOS Client ID Google
+- Android ID Google
+- Amplitude API Key
+- Server URL
 
-Set credentials in API in file helpers/config.js and helpers/credentials.js
+Set credentials in API in file `helpers/config.js` and `helpers/credentials.js`:
 
-- Email User Name
+- Email Username
 - Password For Email
-- Mongo User
+- Mongo Username
 - Mongo Password
-- Mongo DB Name
+- MongoDB Name
 - Reset Password Link
-- Admin User name
+- Admin Username
 - Admin Password
-- User Id
+- User ID
 - Name
 
-Set credentials in Admin Dashboard in file src/index.js
+Set credentials in Admin Dashboard in file `src/index.js`:
 
-- Firebase Api Key
+- Firebase API Key
 - Auth Domain
-- Database Url
-- Project Id
-- Storage Buck
-- Messaging Sender Id
-- App Id
+- Database URL
+- Project ID
+- Storage Bucket
+- Messaging Sender ID
+- App ID
 
 NOTE: Email provider has been only been tested for gmail accounts
 
@@ -176,7 +210,7 @@ NOTE: Email provider has been only been tested for gmail accounts
 | :--------------------------: |
 | ![](./assets/rider-app.webp) |
 
-|               Restaurant APP               |
+|               Store APP               |
 | :----------------------------------------: |
 | ![](./assets/restuarant-app-1-scaled.webp) |
 
@@ -208,7 +242,7 @@ Find the link for the complete documentation of the Enatega Multi Vendor Solutio
 
 ## :iphone: Demos: <a id="heading-9"></a>
 
-|                                                                                                                                               Customer App                                                                                                                                                |                                                                                                                                                   Rider App                                                                                                                                                    |                                                                                                                                                       Restaurant App                                                                                                                                                        |                                                   Customer Web                                                   |                                                    Admin Dashboard                                                     |
+|                                                                                                                                               Customer App                                                                                                                                                |                                                                                                                                                   Rider App                                                                                                                                                    |                                                                                                                                                       Store App                                                                                                                                                        |                                                   Customer Web                                                   |                                                    Admin Dashboard                                                     |
 | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------: |
 |                                                                                          <a href="#heading-9" style="pointer-events: none;"><img src="./assets/logooo.png" alt="Enatega Logos" width="150"></a>                                                                                           |                                                                                          <a href="#heading-9" style="pointer-events: none;"><img src="./assets/Untitled-1-1.png" alt="Enatega Logos" width="150"></a>                                                                                          |                                                                                            <a href="#heading-9" style="pointer-events: none;"><img src="./assets/LOGOS-FOR-ENATGEA-res.png" alt="Enatega Logos" width="150"></a>                                                                                            | <a href="http://multivendor.enatega.com/"><img src="./assets/worldwide.png" alt="Enatega Logos" width="180"></a> | <a href="http://multivendor-admin.enatega.com/"><img src="./assets/worldwide.png" alt="Enatega Logos" width="180"></a> |
 | <a href="https://play.google.com/store/apps/details?id=com.enatega.multivendor"><img src="./assets/android_518705.png" alt="Android Logo" width="25"></a> <a href="https://apps.apple.com/pk/app/enatega-multivendor/id1526488093"><img src="./assets/social_10096939.png" alt="iOS Logo" width="25"></a> | <a href="https://play.google.com/store/apps/details?id=com.enatega.multirider"><img src="./assets/android_518705.png" alt="Android Logo" width="25"></a> <a href="https://apps.apple.com/pk/app/enatega-mulitvendor-rider/id1526674511"><img src="./assets/social_10096939.png" alt="iOS Logo" width="25"></a> | <a href="https://play.google.com/store/apps/details?id=multivendor.enatega.restaurant"><img src="./assets/android_518705.png" alt="Android Logo" width="25"></a> <a href="https://apps.apple.com/pk/app/enatega-multivendor-restaurant/id1526672537"><img src="./assets/social_10096939.png" alt="iOS Logo" width="25"></a> |
@@ -316,13 +350,13 @@ npm start -c
    - Android: Open the Expo Go app and scan the QR code
    - iOS: Use the device's camera app to scan the QR code
 
-### Enatega Restaurant App (React Native)
+### Enatega Store App (React Native)
 
-The restaurant app allows restaurant owners to manage orders and their menu.
+The store app allows store owners to manage orders and their menu.
 
 ```bash
-# Navigate to the restaurant app directory
-cd enatega-multivendor-restaurant
+# Navigate to the store app directory
+cd enatega-multivendor-store
 
 # Install dependencies
 npm install
@@ -342,12 +376,12 @@ npm start -c
 
 ### Building Development Versions
 
-For all mobile apps (Customer, Rider, and Restaurant), you can create development builds using EAS Build.
+For all mobile apps (Customer, Rider, and Store), you can create development builds using EAS Build.
 
 #### Configure EAS Build
 
 ```bash
-# From the app directory (customer, rider, or restaurant)
+# From the app directory (customer, rider, or store)
 eas build:configure
 ```
 
